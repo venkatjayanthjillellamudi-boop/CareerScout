@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+.idea/
+.vscode/
+*.log
+careerscout_agent/.adk/
+*_backup.py
