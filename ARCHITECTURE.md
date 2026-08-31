@@ -1,160 +1,345 @@
-\# CareerScout Architecture
+# CareerScout Architecture
 
+CareerScout is an autonomous job discovery and verification agent built with Google ADK, Gemini 3.6 Flash on Vertex AI, Google Search grounding, deterministic Python verification, and Google Cloud Run.
 
+The architecture separates two concerns:
 
-CareerScout is an autonomous job discovery and verification agent built with Google ADK, Gemini, Vertex AI, Google Search grounding, deterministic Python verification, and Google Cloud Run.
+1. **Development and deployment**
+2. **Runtime job discovery and verification**
 
+---
 
+## System Architecture
 
 ```mermaid
+flowchart TB
 
-flowchart TD
+    %% =========================
+    %% DEVELOPMENT / DEPLOYMENT
+    %% =========================
 
+    DEV[Developer]
 
+    CLI[PowerShell / ADK CLI / gcloud CLI]
 
-&#x20;   U\[User]
+    GITHUB[GitHub Repository]
 
-&#x20;   UI\[ADK Web UI]
+    SRC[CareerScout Python Source Code]
 
-&#x20;   CR\[Google Cloud Run]
+    BUILD[Google Cloud Build]
 
-&#x20;   A\[CareerScout ADK Agent]
-
-&#x20;   T\[search\_and\_verify\_jobs Tool]
-
-
-
-&#x20;   D\[Job Discovery]
-
-&#x20;   G\[Gemini 3.6 Flash on Vertex AI]
-
-&#x20;   S\[Google Search Grounding]
+    RUN[Google Cloud Run]
 
 
+    DEV --> CLI
+    DEV --> GITHUB
 
-&#x20;   V\[Python URL Verification]
+    GITHUB --> SRC
 
-&#x20;   GV\[Grounded Job Verification]
+    CLI -->|adk deploy cloud_run| BUILD
+    SRC --> BUILD
 
-&#x20;   C\[Canonical URL Enforcement]
-
-
-
-&#x20;   ACTIVE\[Verified Active]
-
-&#x20;   CLOSED\[Verified Closed]
-
-&#x20;   FAILED\[Verification Failed]
+    BUILD -->|Build container| RUN
 
 
+    %% =========================
+    %% RUNTIME
+    %% =========================
 
-&#x20;   U --> UI
+    USER[Job Seeker]
 
-&#x20;   UI --> CR
+    UI[ADK Web UI<br/>Frontend]
 
-&#x20;   CR --> A
+    AGENT[CareerScout ADK Agent<br/>Orchestration Layer]
 
-&#x20;   A --> T
+    TOOL[search_and_verify_jobs<br/>Python Function Tool]
 
+    DISCOVERY[Job Discovery]
 
+    GEMINI[Gemini 3.6 Flash<br/>Vertex AI]
 
-&#x20;   T --> D
+    SEARCH[Google Search Grounding]
 
-&#x20;   D --> G
+    HTTP[Deterministic Python<br/>URL / HTTP Verification]
 
-&#x20;   G --> S
+    GROUND[Grounded Job Verification]
 
+    CANONICAL[Canonical URL<br/>Safety Enforcement]
 
+    ACTIVE[Verified Active]
 
-&#x20;   D --> V
+    CLOSED[Verified Closed]
 
-
-
-&#x20;   V -->|Strong deterministic evidence| C
-
-&#x20;   V -->|Evidence insufficient| GV
-
-
-
-&#x20;   GV --> G
-
-&#x20;   GV --> S
-
-&#x20;   GV --> C
+    FAILED[Verification Failed]
 
 
+    USER --> UI
 
-&#x20;   C -->|Exact posting + current evidence| ACTIVE
+    RUN -. hosts .-> UI
+    RUN -. hosts .-> AGENT
 
-&#x20;   C -->|Closed / removed evidence| CLOSED
+    UI -->|User request| AGENT
 
-&#x20;   C -->|Cannot establish trustworthy status| FAILED
+    AGENT -->|Tool call| TOOL
 
+    TOOL --> DISCOVERY
+
+
+    %% DISCOVERY
+
+    DISCOVERY --> GEMINI
+
+    GEMINI --> SEARCH
+
+    SEARCH -->|Current public web evidence| GEMINI
+
+    GEMINI -->|Candidate jobs| DISCOVERY
+
+
+    %% FIRST VERIFICATION LAYER
+
+    DISCOVERY -->|Candidate jobs and URLs| HTTP
+
+
+    %% FAST DETERMINISTIC PATH
+
+    HTTP -->|Strong deterministic evidence| CANONICAL
+
+
+    %% GROUNDED FALLBACK PATH
+
+    HTTP -->|Evidence insufficient,<br/>generic page, or access limitation| GROUND
+
+    GROUND --> GEMINI
+
+    GROUND --> SEARCH
+
+    GROUND -->|Grounded verification result| CANONICAL
+
+
+    %% FINAL SAFETY GATE
+
+    CANONICAL -->|Exact posting + current active evidence| ACTIVE
+
+    CANONICAL -->|Posting removed or closed evidence| CLOSED
+
+    CANONICAL -->|Trustworthy current status cannot be established| FAILED
+
+
+    %% RETURN TO USER
+
+    ACTIVE --> AGENT
+
+    CLOSED --> AGENT
+
+    FAILED --> AGENT
+
+    AGENT -->|Structured explanation| UI
+
+    UI --> USER
 ```
 
+---
 
+## Core Workflow
 
-\## Core Workflow
+**Scout → Verify → Explain**
 
+1. The user provides a resume, target role, location, constraints, or a specific job URL.
+2. The ADK Web UI sends the request to the CareerScout ADK agent.
+3. The agent interprets the request and invokes the `search_and_verify_jobs` Python tool.
+4. Gemini 3.6 Flash on Vertex AI uses Google Search grounding to discover current job candidates.
+5. Every discovered URL passes through deterministic Python URL and HTTP verification.
+6. If the page contains enough trustworthy evidence, the result can continue directly to canonical URL enforcement.
+7. If evidence is incomplete, generic, restricted, or ambiguous, CareerScout performs grounded verification using Gemini and Google Search.
+8. Python independently enforces the canonical direct posting URL before a job can be labeled `verified_active`.
+9. Results are returned as:
+   - **Verified Active**
+   - **Verified Closed**
+   - **Verification Failed**
+10. The CareerScout agent explains the result back to the user through the ADK Web UI.
 
+---
 
-\*\*Scout → Verify → Explain\*\*
+## Frontend and Backend Interaction
 
+### Frontend
 
+The **Google ADK Web UI** acts as the user-facing interface.
 
-1\. User provides a resume, target role, location, or constraints.
+The user can provide requests such as:
 
-2\. CareerScout interprets the request through Google ADK.
+```text
+Find entry-level AI Engineer jobs in the San Francisco Bay Area and verify the openings.
+```
 
-3\. `search\_and\_verify\_jobs` executes the workflow.
+or provide a resume and ask CareerScout to infer relevant early-career roles.
 
-4\. Gemini 3.6 Flash with Google Search grounding discovers current job candidates.
+### Backend
 
-5\. Python checks every discovered URL.
+The backend consists of:
 
-6\. Generic career pages are not accepted as verified active postings.
+- CareerScout ADK agent
+- `search_and_verify_jobs` Python function tool
+- Gemini 3.6 Flash through Vertex AI
+- Google Search grounding
+- deterministic Python verification logic
+- canonical URL safety enforcement
 
-7\. When deterministic verification is insufficient, Gemini performs grounded verification.
+The ADK agent coordinates the workflow, while Python controls mandatory verification behavior.
 
-8\. Python enforces the final canonical job URL.
+---
 
-9\. Results are classified as:
+## Development and Deployment Flow
 
-&#x20;  - Verified Active
+CareerScout is developed locally using Python and Google ADK.
 
-&#x20;  - Verified Closed
+Deployment flow:
 
-&#x20;  - Verification Failed
+```text
+Developer
+   ↓
+PowerShell / ADK CLI / gcloud CLI
+   ↓
+CareerScout source code
+   ↓
+Google Cloud Build
+   ↓
+Container image
+   ↓
+Google Cloud Run
+```
 
+GitHub stores the public source code, architecture documentation, setup instructions, and reproducibility information.
 
+The CLI is used for development and deployment. It is not part of the normal end-user runtime workflow.
 
-\## Google Cloud Components
+---
 
+## Google Cloud Components
 
+### Google Cloud Run
 
-\- \*\*Google Cloud Run\*\* — deployed application runtime
+Hosts the deployed CareerScout ADK application.
 
-\- \*\*Vertex AI\*\* — Gemini model access
+### Vertex AI
 
-\- \*\*Google ADK\*\* — agent orchestration and tool execution
+Provides access to Gemini 3.6 Flash.
 
-\- \*\*Google Search Grounding\*\* — live web discovery and verification support
+### Google Cloud Build
 
+Builds the CareerScout container during Cloud Run deployment.
 
+### Google ADK
 
-\## Reliability Principle
+Provides agent orchestration, function-tool execution, and the development web interface.
 
+### Google Search Grounding
 
+Provides current public-web evidence for job discovery and verification.
 
-CareerScout separates job discovery from job verification.
+---
 
+## Verification Architecture
 
+CareerScout deliberately separates **discovery** from **verification**.
 
-A search result, HTTP 200 response, or generic company career page alone is not enough to classify a job as active.
+A discovered job is not automatically trusted.
 
+### Layer 1 — Discovery
 
+Gemini + Google Search identifies potentially relevant openings.
 
-A `verified\_active` result must survive CareerScout's canonical URL and current-status verification pipeline.
+### Layer 2 — Deterministic URL Verification
 
+Python checks:
 
+- URL protocol
+- hostname
+- redirect destination
+- HTTP response
+- whether the page appears job-specific
+- title and company identity
+- active or closed page signals
 
+### Layer 3 — Grounded Verification
+
+When deterministic evidence is insufficient, Gemini performs an independent grounded search for the exact role.
+
+### Layer 4 — Canonical URL Enforcement
+
+Before `verified_active` is allowed, Python checks that:
+
+- an exact individual posting URL exists
+- the final URL remains job-specific
+- the page is reachable
+- the page corresponds to the expected title and company
+- current evidence supports an active posting
+
+---
+
+## Reliability Principle
+
+CareerScout does not treat any of the following as sufficient proof that a job is active:
+
+- a search result
+- HTTP 200 alone
+- a company careers homepage
+- a generic ATS board
+- an old aggregator listing
+- a model-generated URL without independent validation
+
+A `verified_active` result must survive the canonical URL and current-status verification pipeline.
+
+If CareerScout cannot establish trustworthy current evidence, it returns:
+
+```text
+verification_failed
+```
+
+instead of presenting the opening as confirmed.
+
+This is intentional.
+
+CareerScout is designed to prefer uncertainty over false confidence.
+
+---
+
+## Result States
+
+### Verified Active
+
+The exact individual posting is supported by current evidence and passes canonical URL verification.
+
+### Verified Closed
+
+Reliable evidence indicates the exact posting has been removed, closed, filled, expired, or is no longer accepting applications.
+
+### Verification Failed
+
+CareerScout could not establish a trustworthy current status.
+
+This does **not** automatically mean the job is fake or unavailable.
+
+---
+
+## Current Architecture Scope
+
+The current hackathon MVP focuses on:
+
+- autonomous job discovery
+- resume-informed role interpretation
+- current-web search
+- deterministic URL verification
+- grounded fallback verification
+- canonical job URL enforcement
+- active / closed / failed classification
+- explainable results
+
+Not yet implemented:
+
+- deterministic candidate qualification scoring
+- automatic application submission
+- persistent job history
+- exhaustive market coverage
+- long-term user memory
